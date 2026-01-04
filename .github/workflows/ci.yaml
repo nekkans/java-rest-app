@@ -1,0 +1,38 @@
+name: CI Pipeline
+on:
+  push:
+    branches: [main]
+jobs:
+  build-test-scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - name: Set up JDK
+        uses: actions/setup-java@v3
+        with: { java-version: '17' }
+      - name: Unit Tests & Build
+        run: mvn clean test package  # Runs unit tests early (shift-left)
+      - name: SAST (Dependency Check)
+        run: mvn org.owasp:dependency-check-maven:check  # Shift-left security
+      - name: Build Docker Image
+        run: docker build -t ${{ secrets.DOCKER_USERNAME }}/java-demo:${{ github.sha }} .
+      - name: Container Scan (Trivy)
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: ${{ secrets.DOCKER_USERNAME }}/java-demo:${{ github.sha }}
+          format: table
+          exit-code: 1  # Fail on critical vulns (shift-left security)
+      - name: Push to Docker Hub
+        run: |
+          echo "${{ secrets.DOCKER_PASSWORD }}" | docker login -u ${{ secrets.DOCKER_USERNAME }} --password-stdin
+          docker push ${{ secrets.DOCKER_USERNAME }}/java-demo:${{ github.sha }}
+      - name: Update Manifest Repo
+        run: |
+          git clone https://x-access-token:${{ secrets.K8S_REPO_TOKEN }}@github.com/<your-username>/k8s-manifests.git
+          cd k8s-manifests
+          yq e '.image.tag = "${{ github.sha }}"' -i charts/java-demo/values.yaml  # Requires yq installed
+          git config user.name "GitHub Actions"
+          git config user.email "actions@github.com"
+          git add .
+          git commit -m "Update image tag to ${{ github.sha }}"
+          git push
